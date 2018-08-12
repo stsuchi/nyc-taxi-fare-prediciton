@@ -14,6 +14,8 @@ from pyspark.mllib.linalg import Vector as MLLibVector, Vectors as MLLibVectors
 from pyspark.mllib.tree import RandomForest, RandomForestModel
 import numpy as np
 
+sc = SparkContext("local", "Simple App")
+spark = SparkSession(sc)
 
 schema = StructType([
     StructField("key", StringType()),
@@ -29,7 +31,7 @@ schema = StructType([
 us_holidays = holidays.US()
 
 
-def load_and_process_data(path='data/train.csv'):
+def load_and_process_data(path='/Users/shirotsuchiya/Documents/kaggle/nyc_taxi/data/train_sample_5000.csv'):
 	df = spark.read.csv('data/train_sample_5000.csv',header=True,mode="DROPMALFORMED", schema=schema)
 
 	# remove null values in any field
@@ -93,12 +95,21 @@ def get_hour(x):
 def get_year(x):
     return 'year_' + str(x)
 
+
+def get_holiday(x):
+	if x in us_holidays:
+		return 'holiday'
+	else:
+		return 'non-holiday'
+
 def create_time_features(df):
 	get_hour_udf = udf(lambda x: get_hour(x),StringType())
 	get_year_udf = udf(lambda x: get_year(x),StringType())
+	get_holiday_udf = udf(lambda x: get_holiday(x),StringType())
 
 	df = df.withColumn('pickup_hour',get_hour_udf(df.local_hour))
 	df = df.withColumn('pickup_year',get_year_udf(df.local_year))
+	df = df.withColumn('holiday',get_holiday_udf(df.local_time))
 
 	return df
 
@@ -120,22 +131,24 @@ def encode_df(df):
 	hour_indexer = StringIndexer(inputCol='pickup_hour',outputCol='pickup_hour_numeric').fit(df)
 	year_indexer = StringIndexer(inputCol='pickup_year',outputCol='pickup_year_numeric').fit(df)
 	dow_indexer = StringIndexer(inputCol='pickup_dow',outputCol='pickup_dow_numeric').fit(df)
+	holiday_indexer = StringIndexer(inputCol='holiday',outputCol='holiday_numeric').fit(df)
 	pickup_zone_indexer = StringIndexer(inputCol='pickup_zone',outputCol='pickup_zone_numeric').fit(df)
 	dropoff_zone_indexer = StringIndexer(inputCol='dropoff_zone',outputCol='dropoff_zone_numeric').fit(df)
 
 	hour_encoder = OneHotEncoder(inputCol='pickup_hour_numeric',outputCol='pickup_hour_vector')
 	year_encoder = OneHotEncoder(inputCol='pickup_year_numeric',outputCol='pickup_year_vector')
 	dow_encoder = OneHotEncoder(inputCol='pickup_dow_numeric',outputCol='pickup_dow_vector')
+	holiday_encoder = OneHotEncoder(inputCol='holiday_numeric',outputCol='holiday_vector')
 	pickup_zone_encoder = OneHotEncoder(inputCol='pickup_zone_numeric',outputCol='pickup_zone_vector')
 	dropoff_zone_encoder = OneHotEncoder(inputCol='dropoff_zone_numeric',outputCol='dropoff_zone_vector')
 
 
 	assembler = VectorAssembler(inputCols=['dist','pickup_hour_vector','pickup_year_vector','pickup_dow_vector',\
-	                                      'pickup_zone_vector','dropoff_zone_vector','passenger_count'],\
+	                                      'holiday_vector', 'pickup_zone_vector','dropoff_zone_vector','passenger_count'],\
 	                           outputCol="features")
 
-	pipeline = Pipeline(stages=[hour_indexer,year_indexer,dow_indexer,pickup_zone_indexer,dropoff_zone_indexer,\
-	                           hour_encoder,year_encoder,dow_encoder,pickup_zone_encoder,dropoff_zone_encoder,\
+	pipeline = Pipeline(stages=[hour_indexer,year_indexer,dow_indexer,holiday_indexer,pickup_zone_indexer,dropoff_zone_indexer,\
+	                           hour_encoder,year_encoder,dow_encoder,holiday_encoder,pickup_zone_encoder,dropoff_zone_encoder,\
 	                           assembler])
 
 	model = pipeline.fit(df)
@@ -169,10 +182,7 @@ def compute_rmse(predictions,testData):
 
 	return rmse
 
-
-if __name__=='__main__':
-	sc = SparkContext("local", "Simple App")
-	spark = SparkSession(sc)
+def main():
 	df = load_and_process_data()
 	df = create_dist_feature(df)
 	df = create_time_features(df)
@@ -182,3 +192,8 @@ if __name__=='__main__':
 	predictions = train_and_predict_with_rf(trainingData,testData)
 	rmse = compute_rmse(predictions,testData)
 	print(rmse)
+	
+
+
+if __name__=='__main__':
+	main()
