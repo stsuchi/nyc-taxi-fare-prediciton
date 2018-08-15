@@ -8,10 +8,9 @@ import holidays
 from pyspark.sql.functions import hour, year, date_format
 from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler
 from pyspark.ml import Pipeline
-from pyspark.mllib.regression import LabeledPoint
+from pyspark.ml.regression import RandomForestRegressor
+from pyspark.ml.evaluation import RegressionEvaluator
 from pyspark.sql.functions import col
-from pyspark.mllib.linalg import Vector as MLLibVector, Vectors as MLLibVectors
-from pyspark.mllib.tree import RandomForest, RandomForestModel
 import numpy as np
 
 sc = SparkContext("local", "Simple App")
@@ -128,12 +127,12 @@ def create_zone_features(df):
 
 
 def encode_df(df):
-	hour_indexer = StringIndexer(inputCol='pickup_hour',outputCol='pickup_hour_numeric').fit(df)
-	year_indexer = StringIndexer(inputCol='pickup_year',outputCol='pickup_year_numeric').fit(df)
-	dow_indexer = StringIndexer(inputCol='pickup_dow',outputCol='pickup_dow_numeric').fit(df)
-	holiday_indexer = StringIndexer(inputCol='holiday',outputCol='holiday_numeric').fit(df)
-	pickup_zone_indexer = StringIndexer(inputCol='pickup_zone',outputCol='pickup_zone_numeric').fit(df)
-	dropoff_zone_indexer = StringIndexer(inputCol='dropoff_zone',outputCol='dropoff_zone_numeric').fit(df)
+	hour_indexer = StringIndexer(inputCol='pickup_hour',outputCol='pickup_hour_numeric')
+	year_indexer = StringIndexer(inputCol='pickup_year',outputCol='pickup_year_numeric')
+	dow_indexer = StringIndexer(inputCol='pickup_dow',outputCol='pickup_dow_numeric')
+	holiday_indexer = StringIndexer(inputCol='holiday',outputCol='holiday_numeric')
+	pickup_zone_indexer = StringIndexer(inputCol='pickup_zone',outputCol='pickup_zone_numeric')
+	dropoff_zone_indexer = StringIndexer(inputCol='dropoff_zone',outputCol='dropoff_zone_numeric')
 
 	hour_encoder = OneHotEncoder(inputCol='pickup_hour_numeric',outputCol='pickup_hour_vector')
 	year_encoder = OneHotEncoder(inputCol='pickup_year_numeric',outputCol='pickup_year_vector')
@@ -151,36 +150,30 @@ def encode_df(df):
 	                           hour_encoder,year_encoder,dow_encoder,holiday_encoder,pickup_zone_encoder,dropoff_zone_encoder,\
 	                           assembler])
 
-	model = pipeline.fit(df)
-	transformed = model.transform(df)
+	transformed = pipeline.fit(df).transform(df)
 
-	data = transformed.select(col("fare_amount").alias("label"), \
-	                          col("features")).rdd.map(lambda row:LabeledPoint(row.label, MLLibVectors.fromML(row.features)))
-	return data
+	return transformed
 
-def train_test_split(data,train_fraction=0.8):
-	(trainingData, testData) = data.randomSplit([train_fraction, 1 - train_fraction])
+def train_test_split(transformed,train_fraction=0.8):
+	(trainingData, testData) = transformed.randomSplit([train_fraction, 1 - train_fraction])
 	
 	return trainingData, testData
 
 
 def train_and_predict_with_rf(trainingData,testData):
-	rf_model = RandomForest.trainRegressor(trainingData, categoricalFeaturesInfo={},
-                                    numTrees=250, featureSubsetStrategy="auto",
-                                    impurity='variance', maxDepth=20, maxBins=126)
+	rf = RandomForestRegressor(featuresCol='features', labelCol='fare_amount', numTrees=400, maxDepth=10, seed=42)
+	model = rf.fit(trainingData)
 
-	predictions = rf_model.predict(testData.map(lambda x: x.features))
+	predictions = model.transform(testData)
 
 	return predictions
 
 
-def compute_rmse(predictions,testData):
-	pred = predictions.collect()
-	truths = testData.map(lambda row: row.label).collect()
-
-	rmse = (np.sum([(i-j)**2 for i,j in zip(pred,truths)])/float(len(pred)))**(1/2)
-
+def compute_rmse(predictions):
+	evaluator = RegressionEvaluator(predictionCol='prediction', labelCol='fare_amount', metricName='rmse')
+	rmse = evaluator.evaluate(predictions)
 	return rmse
+	
 
 def main():
 	df = load_and_process_data()
@@ -190,8 +183,9 @@ def main():
 	data = encode_df(df)
 	trainingData,testData = train_test_split(data)
 	predictions = train_and_predict_with_rf(trainingData,testData)
-	rmse = compute_rmse(predictions,testData)
-	print(rmse)
+	#predictions.show(5)
+	rmse = compute_rmse(predictions)
+	print('Test RMSE: ', rmse)
 	
 
 
